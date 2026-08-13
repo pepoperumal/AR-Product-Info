@@ -1,46 +1,144 @@
 <!DOCTYPE html>
-<html lang="en-us">
+<!--
+  data-orientation is stamped into this file by the build (Arsmi Games -> Build WebGL, which
+  asks portrait or landscape). The value below is only the default, for a build made some
+  other way.
+
+  It is written afterwards, by the post-processor, rather than by one of Unity's own template
+  macros: Unity evaluates those against a fixed set of names it knows, and a name it does not
+  know fails the build instead of producing an empty string.
+
+  Nothing in this file may contain a Unity macro delimiter - three braces - not even inside a
+  comment like this one. The preprocessor scans the raw text, so it finds them in comments
+  too, and evaluates whatever sits between them. This very comment used to name the delimiter
+  literally, which made Unity try to evaluate the expression " " and fail the build with
+  "Cannot read property 'toString' of undefined" - an error that points at the file but not
+  at the sentence.
+-->
+<html lang="en-us" data-orientation="landscape">
   <head>
     <meta charset="utf-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <!-- Set here rather than injected by script, so the first paint is already correct. -->
+
+    <!--
+      Static, not injected from JS.
+
+      This used to be appended to <head> from script, which is after the browser has already
+      laid the page out once — so on a notched phone the first frame is laid out against the
+      wrong viewport and the canvas is the wrong size until something forces a reflow.
+      viewport-fit=cover is what lets the canvas reach under the notch instead of being
+      letterboxed by the safe area.
+    -->
     <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Unity WebGL Player | ProductInfo</title>
-    <link rel="shortcut icon" href="TemplateData/favicon.ico">
-    <link rel="stylesheet" href="TemplateData/style.css">
+
+    <title>ProductInfo</title>
+
+    <!--
+      The platform SDK. Without it the game cannot talk to Arsmi Games at all:
+      GameHubBridge.jslib only wires itself up if window.GameHubSDK already exists,
+
+          if (!window.GameHubBridge && window.GameHubSDK) { ...create... }
+
+      so with no SDK on the page, window.GameHubBridge is never created, every Emit
+      from C# is a silent no-op, and no listeners are installed. The game neither
+      sends nor receives anything — and nothing errors to tell you why.
+
+      Two sources, in order:
+
+      1. /sdk/gamehub-sdk.js — the platform's own copy, always current. This only
+         resolves when the platform is serving the build (/unity/<slug>/...), because
+         the path is absolute.
+
+      2. gamehub-sdk.js — the copy that ships inside this build. Needed because a
+         build hosted ANYWHERE else (a static host, Cloudflare Pages, file://) would
+         resolve the absolute path against that host and get a 404.
+
+      document.write is deliberate: it is synchronous, so the SDK is guaranteed to be
+      defined before the Unity loader runs. C# Awake() calls straight into the bridge,
+      so "eventually loaded" is not good enough.
+    -->
+    <script src="/sdk/gamehub-sdk.js"></script>
+    <script>
+      if (!window.GameHubSDK) {
+        document.write('<script src="gamehub-sdk.js"><\/script>');
+      }
+    </script>
+
+    <style>
+      html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}
+
+      /*
+        Orientation lock.
+
+        The post-processor stamps data-orientation on <html> (landscape or portrait). Those
+        two numbers turn it into an aspect ratio; the canvas is then locked to that shape and
+        centred, and a window of a different shape shows black bars rather than stretching the
+        game. This is what makes a portrait build stay portrait on a landscape screen.
+
+        Without this the canvas filled 100% x 100% of the window, so the game took whatever
+        shape the window was — a portrait game ran landscape on a desktop.
+
+        If your game is not 16:9 / 9:16 (say it is 3:4), change the matching pair below.
+      */
+      html               { --ar-w:16; --ar-h:9;  }   /* default / landscape */
+      html[data-orientation="portrait"] { --ar-w:9; --ar-h:16; }
+
+      #unity-container{
+        position:fixed;inset:0;
+        display:flex;align-items:center;justify-content:center;
+        overflow:hidden;background:#000;
+      }
+
+      /*
+        The largest box of the chosen ratio that fits the window. min() picks whichever
+        dimension is the limit; the other follows from the ratio. No !important and no inline
+        style may override this, or the lock is lost — see the JS below, which used to.
+      */
+      #unity-canvas{
+        display:block;background:#000;
+        width:  min(100vw, calc(100vh * var(--ar-w) / var(--ar-h)));
+        height: min(100vh, calc(100vw * var(--ar-h) / var(--ar-w)));
+      }
+
+      #unity-loading-bar{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:none}
+      #unity-progress-bar-empty{width:200px;height:6px;background:#1c1b20;border-radius:3px;overflow:hidden}
+      #unity-progress-bar-full{width:0;height:100%;background:#cc785c}
+      #unity-footer{display:none!important}
+      #unity-warning{position:absolute;left:50%;top:5%;transform:translate(-50%);background:#000;color:#fff}
+    </style>
   </head>
   <body>
     <div id="unity-container">
       <canvas id="unity-canvas" width=960 height=600 tabindex="-1"></canvas>
       <div id="unity-loading-bar">
-        <div id="unity-logo"></div>
         <div id="unity-progress-bar-empty">
           <div id="unity-progress-bar-full"></div>
         </div>
       </div>
-      <div id="unity-warning"> </div>
-      <div id="unity-footer">
-        <div id="unity-webgl-logo"></div>
-        <div id="unity-fullscreen-button"></div>
-        <div id="unity-build-title">ProductInfo</div>
-      </div>
+      <div id="unity-warning"></div>
+      <div id="unity-footer"></div>
     </div>
+
     <script>
-
-      var container = document.querySelector("#unity-container");
       var canvas = document.querySelector("#unity-canvas");
-      var loadingBar = document.querySelector("#unity-loading-bar");
-      var progressBarFull = document.querySelector("#unity-progress-bar-full");
-      var fullscreenButton = document.querySelector("#unity-fullscreen-button");
-      var warningBanner = document.querySelector("#unity-warning");
 
-      // Shows a temporary message banner/ribbon for a few seconds, or
-      // a permanent error message on top of the canvas if type=='error'.
-      // If type=='warning', a yellow highlight color is used.
-      // Modify or remove this function to customize the visually presented
-      // way that non-critical warnings and error messages are presented to the
-      // user.
+      // Report engine progress to the platform. Without this it can only see the
+      // iframe's load event, which fires long before the wasm has downloaded and
+      // compiled — so it would hide its loading screen and leave the player
+      // staring at a black frame until Unity finally paints.
+      function postToPlatform(type, payload) {
+        try {
+          if (window.parent && window.parent !== window) {
+            var msg = { type: type, ts: Date.now(), version: 1 };
+            for (var k in (payload || {})) msg[k] = payload[k];
+            window.parent.postMessage(msg, "*");
+          }
+        } catch (e) { /* not embedded, or blocked */ }
+      }
+      postToPlatform("gamehub:unity:progress", { progress: 0 });
+
       function unityShowBanner(msg, type) {
+        var warningBanner = document.querySelector("#unity-warning");
         function updateBannerVisibility() {
           warningBanner.style.display = warningBanner.children.length ? 'block' : 'none';
         }
@@ -50,7 +148,7 @@
         if (type == 'error') div.style = 'background: red; padding: 10px;';
         else {
           if (type == 'warning') div.style = 'background: yellow; padding: 10px;';
-          setTimeout(function() {
+          setTimeout(function () {
             warningBanner.removeChild(div);
             updateBannerVisibility();
           }, 5000);
@@ -61,6 +159,7 @@
       var buildUrl = "Build";
       var loaderUrl = buildUrl + "/ProductWebgl.loader.js";
       var config = {
+        arguments: [],
         dataUrl: buildUrl + "/ProductWebgl.data.unityweb",
         frameworkUrl: buildUrl + "/ProductWebgl.framework.js.unityweb",
         codeUrl: buildUrl + "/ProductWebgl.wasm.unityweb",
@@ -69,40 +168,71 @@
         productName: "ProductInfo",
         productVersion: "1.0.0",
         showBanner: unityShowBanner,
+
+        /*
+          How many device pixels Unity renders per CSS pixel.
+
+          This is a multiplier, not a resolution, and the browser already knows the right one
+          for the device it is on — 2 on one phone, 3 on the next, 3 on an iPhone, 2 on an
+          iPad. So there is no device list to keep here; window.devicePixelRatio is the
+          answer, and Unity's own default is to use it as it comes:
+
+              JS_SystemInfo_GetPreferredDevicePixelRatio: function() {
+                return Module.matchWebGLToCanvasSize == false ? 1
+                     : Module.devicePixelRatio || window.devicePixelRatio || 1;
+              }
+
+          Note which wins. Setting this field at all overrides the browser, which is why what
+          used to be here was so costly: it sniffed the user agent and forced 1 on anything
+          that looked like a phone. That is the line Unity ships commented out in its own
+          default template, under "to lower canvas resolution on mobile devices to gain some
+          performance" — an opt-in sacrifice, which this template had permanently on.
+
+          On a DPR 3 phone it meant Unity rendered a 640x360 framebuffer and the browser
+          stretched it over 1920x1080 of glass: a third of the detail in each direction,
+          about a sixteenth of the pixels a desktop got, and every edge in the game soft.
+
+          What is left is only a ceiling and a floor. The ceiling keeps a 4K desktop or a DPR 4
+          phone from rendering sixteen megapixels of a game that does not need them; the floor
+          stops a zoomed-out browser reporting less than 1 from making things worse than
+          native. Between the two the device's own number is used, whatever it is.
+        */
+        devicePixelRatio: Math.min(2, Math.max(1, window.devicePixelRatio || 1)),
       };
 
-      // By default, Unity keeps WebGL canvas render target size matched with
-      // the DOM size of the canvas element (scaled by window.devicePixelRatio)
-      // Set this to false if you want to decouple this synchronization from
-      // happening inside the engine, and you would instead like to size up
-      // the canvas DOM size and WebGL render target sizes yourself.
-      // config.matchWebGLToCanvasSize = false;
+      // The canvas size is owned entirely by the orientation-lock CSS above. Setting it here
+      // (as this template used to, with canvas.style.width/height = "100%") would inline-style
+      // over that lock and stretch the game back to the window's shape — the exact bug the lock
+      // exists to prevent. Unity reads the canvas's rendered size and matches its framebuffer
+      // to it, so CSS alone is enough; it needs no help from here.
 
-      // The stock template branched on the user agent here: mobile got a full-screen canvas,
-      // everything else got a fixed 960x600 landscape one. An iPad reports itself as a Mac,
-      // so it took the desktop branch - that is where the landscape came from. The canvas is
-      // now a portrait box on every device, sized entirely by CSS.
-
-
-      loadingBar.style.display = "block";
+      document.querySelector("#unity-loading-bar").style.display = "block";
+      canvas.addEventListener('webglcontextlost', function (e) {
+        e.preventDefault();
+        unityShowBanner('WebGL context lost.', 'error');
+      });
 
       var script = document.createElement("script");
       script.src = loaderUrl;
-      script.onload = () => {
-        createUnityInstance(canvas, config, (progress) => {
-          progressBarFull.style.width = 100 * progress + "%";
-              }).then((unityInstance) => {
-                loadingBar.style.display = "none";
-                fullscreenButton.onclick = () => {
-                  unityInstance.SetFullscreen(1);
-                };
-              }).catch((message) => {
-                alert(message);
-              });
-            };
-
+      script.onload = function () {
+        createUnityInstance(canvas, config, function (progress) {
+          document.querySelector("#unity-progress-bar-full").style.width = 100 * progress + "%";
+          postToPlatform("gamehub:unity:progress", { progress: progress });
+        }).then(function (unityInstance) {
+          document.querySelector("#unity-loading-bar").style.display = "none";
+          window.unityInstance = unityInstance;
+          // Tell the platform what this build was actually made for. It already has an
+          // orientation on the game record, typed in by whoever uploaded it; this is the
+          // build answering for itself, so the two can be compared instead of trusted.
+          postToPlatform("gamehub:unity:ready", {
+            orientation: document.documentElement.getAttribute("data-orientation") || "landscape",
+          });
+        }).catch(function (message) {
+          postToPlatform("gamehub:unity:error", { error: String(message) });
+          unityShowBanner(message, 'error');
+        });
+      };
       document.body.appendChild(script);
-
     </script>
   </body>
 </html>
